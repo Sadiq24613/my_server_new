@@ -1,34 +1,36 @@
-import { McpApp, Module, ConfigModule } from '@nitrostack/core';
-import { CalculatorModule } from './modules/calculator/calculator.module.js';
+import { ConfigModule, McpApp, Module } from '@nitrostack/core';
 import { SystemHealthCheck } from './health/system.health.js';
+import { DeploymentModule } from './modules/deployment/deployment.module.js';
+import { GitHubModule } from './modules/github/github.module.js';
 
 /**
- * Root Application Module
- * 
- * This is the main module that bootstraps the MCP server.
- * It registers all feature modules and health checks.
+ * Root application module for the GitHub Deploy Agent MCP server.
  */
 @McpApp({
   module: AppModule,
   server: {
-    name: 'calculator-server',
-    version: '1.0.0'
+    name: 'github-deploy-agent',
+    version: '1.0.0',
   },
   logging: {
-    level: 'info'
-  }
+    level: 'info',
+  },
 })
 @Module({
   name: 'app',
-  description: 'Root application module',
+  description: 'Root module for GitHub repository automation tools',
   imports: [
-    ConfigModule.forRoot(),
-    CalculatorModule
+    ConfigModule.forRoot({
+      validate: (config) =>
+        Boolean(config.NITROSTACK_API_KEY) &&
+        (Boolean(config.GITHUB_OAUTH_CLIENT_ID || config.GITHUB_CLIENT_ID) ||
+          Boolean(config.GITHUB_TOKEN)),
+    }),
+    GitHubModule,
+    DeploymentModule,
   ],
   providers: [
-    // Health Checks
     SystemHealthCheck,
-  ]
+  ],
 })
 export class AppModule {}
-

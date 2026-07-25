@@ -1,49 +1,47 @@
-# NitroStack Starter Template
+# GitHub Deploy Agent (NitroStack MCP Server)
 
-Minimal template for learning NitroStack fundamentals with a calculator-focused
-MCP server and basic widgets.
+Production-oriented NitroStack MCP server for GitHub repository automation.
 
-## What This Template Includes
+## Implemented in Phase 1
 
-- `calculator` module with tools, resources, and prompts
-- TypeScript + Zod validation setup
-- Widget-ready project structure
-- Production-friendly npm scripts
+- GitHub PAT authentication and account verification
+- Repository creation, listing, lookup, tree/file/directory reads, and code search
+- Branch creation/deletion
+- Commit history listing plus commit creation (single and multiple files) and branch ref updates
+- Pull request creation, listing, and merging
+- Repository analyzer service for framework/language/package-manager detection
+- Deployment provider abstraction (`VercelProvider`, `RenderProvider`) prepared for Phase 2
 
-## Quick Start
+## Environment Variables
+
+Set both values before starting the server:
 
 ```bash
-npx @nitrostack/cli init my-server --template typescript-starter
-cd my-server
+NITROSTACK_API_KEY=your_nitrostack_api_key
+GITHUB_OAUTH_CLIENT_ID=your_github_oauth_app_client_id
+GITHUB_OAUTH_CLIENT_SECRET=your_github_oauth_app_client_secret
+```
+
+Optional fallback (non-interactive):
+
+```bash
+GITHUB_TOKEN=your_github_personal_access_token
+```
+
+## Interactive GitHub OAuth Login
+
+1. Call `authenticate_github` with `{ "action": "start" }`
+2. Open `verification_uri` and enter `user_code`
+3. Call `authenticate_github` with `{ "action": "poll", "device_code": "..." }` until status is `authenticated`
+
+## Run
+
+```bash
 npm run dev
 ```
 
-## Common Commands
+## Build
 
 ```bash
-npm run dev
 npm run build
-npm start
 ```
-
-## NitroStudio
-
-NitroStudio is the recommended way to test and debug this template during
-development.
-
-- Download: <https://nitrostack.ai/studio>
-- Studio: <https://nitrostack.ai/studio>
-
-## Links
-
-- Docs: <https://docs.nitrostack.ai>
-- Templates docs: <https://docs.nitrostack.ai/templates/01-starter-template>
-- Main repository: <https://github.com/nitrocloudofficial/nitrostack>
-
-## Community
-
-- Discord: <https://discord.gg/uVWey6UhuD>
-- X: <https://x.com/nitrostackai>
-- YouTube: <https://www.youtube.com/@nitrostackai>
-- LinkedIn: <https://linkedin.com/company/nitrostack-ai/>
-- GitHub: <https://github.com/nitrostackai>
