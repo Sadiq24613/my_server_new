@@ -5,23 +5,137 @@ import {
   DeploymentResult,
 } from '../deployment.provider.js';
 
+export interface RenderService {
+  id: string;
+  name: string;
+  type: string;
+  repo: string;
+  autoDeploy: string;
+  updatedAt: string;
+}
+
+export interface RenderDeploy {
+  id: string;
+  status: string;
+  commit?: {
+    id: string;
+    message: string;
+  };
+  createdAt: string;
+  finishedAt?: string;
+}
+
 /**
- * Placeholder Render deployment provider.
- * Intentionally non-operational for Phase 1.
+ * Render deployment provider implementing Render REST API integration.
  */
 @Injectable()
 export class RenderProvider extends DeploymentProvider {
   readonly providerName = 'render';
 
-  validateConfiguration(): void {
-    // Phase 1 intentionally does not validate Render-specific configuration yet.
+  private getApiKey(apiKeyOverride?: string): string {
+    const key = apiKeyOverride || process.env.RENDER_API_KEY;
+    if (!key) {
+      throw new McpError(
+        'Render API key is missing. Please provide renderApiKey or set the RENDER_API_KEY environment variable.',
+        'RENDER_API_KEY_MISSING',
+        400,
+      );
+    }
+    return key;
   }
 
-  async createDeployment(_request: DeploymentRequest): Promise<DeploymentResult> {
-    throw new McpError(
-      'Render deployment is not implemented in Phase 1.',
-      'DEPLOYMENT_NOT_IMPLEMENTED',
-      501,
-    );
+  validateConfiguration(): void {
+    if (!process.env.RENDER_API_KEY) {
+      console.warn('[RenderProvider] RENDER_API_KEY environment variable is not set.');
+    }
+  }
+
+  /**
+   * List services registered in Render account
+   */
+  async listServices(apiKeyOverride?: string): Promise<RenderService[]> {
+    const apiKey = this.getApiKey(apiKeyOverride);
+    const res = await fetch('https://api.render.com/v1/services?limit=50', {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new McpError(`Failed to fetch Render services: ${errText}`, 'RENDER_API_ERROR', res.status);
+    }
+
+    const data = (await res.json()) as Array<{ service: { id: string; name: string; type: string; repo: string; autoDeploy: string; updatedAt: string } }>;
+    return data.map((item) => item.service);
+  }
+
+  /**
+   * Trigger a deploy for a given Render service ID
+   */
+  async triggerDeploy(serviceId: string, clearCache: boolean = false, apiKeyOverride?: string): Promise<RenderDeploy> {
+    const apiKey = this.getApiKey(apiKeyOverride);
+    const res = await fetch(`https://api.render.com/v1/services/${serviceId}/deploys`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        clearCache: clearCache ? 'clear' : 'do_not_clear',
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new McpError(`Failed to trigger Render deploy: ${errText}`, 'RENDER_API_ERROR', res.status);
+    }
+
+    const data = (await res.json()) as RenderDeploy;
+    return data;
+  }
+
+  /**
+   * Get status of a deploy
+   */
+  async getDeployStatus(serviceId: string, deployId: string, apiKeyOverride?: string): Promise<RenderDeploy> {
+    const apiKey = this.getApiKey(apiKeyOverride);
+    const res = await fetch(`https://api.render.com/v1/services/${serviceId}/deploys/${deployId}`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new McpError(`Failed to fetch deploy status: ${errText}`, 'RENDER_API_ERROR', res.status);
+    }
+
+    const data = (await res.json()) as RenderDeploy;
+    return data;
+  }
+
+  async createDeployment(request: DeploymentRequest): Promise<DeploymentResult> {
+    // If request contains serviceId in environment field, trigger deploy directly
+    const serviceId = request.environment;
+    if (!serviceId) {
+      throw new McpError(
+        'Render service ID is required in the environment parameter to trigger a deploy.',
+        'SERVICE_ID_REQUIRED',
+        400,
+      );
+    }
+
+    const deploy = await this.triggerDeploy(serviceId);
+    return {
+      provider: this.providerName,
+      status: deploy.status === 'live' ? 'ready' : 'queued',
+      message: `Deploy triggered for service ${serviceId}`,
+      deploymentId: deploy.id,
+    };
   }
 }
+

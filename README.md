@@ -15,11 +15,19 @@ Production-oriented NitroStack MCP server for GitHub repository automation.
   - `apply_code_patch` for "push/save/commit this code" requests
   - `create_feature_branch_and_pr` for branch + commit + PR workflows
   - `prepare_deploy_plan` for deploy readiness, build/start commands, and Dockerfile generation
-- Deployment provider abstraction (`VercelProvider`, `RenderProvider`) prepared for Phase 2
+- Automated Render API deployment tools:
+  - `render_list_services` to list registered Render services
+  - `render_trigger_deploy` to trigger deployments programmatically
+  - `render_get_deploy_status` to monitor deployment progress
 
 ## Environment Variables
 
-Configure these in NitroCloud/project environment variables. The app does not load a local `.env` file.
+Configure these in NitroCloud/Render environment variables:
+
+```bash
+RENDER_API_KEY=rnd_...   # Required to allow MCP server to interact with Render API automatically
+```
+
 
 No GitHub credential is required to start the server.
 
