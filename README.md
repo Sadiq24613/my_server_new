@@ -14,13 +14,30 @@ Production-oriented NitroStack MCP server for GitHub repository automation.
 
 ## Environment Variables
 
-Set both values before starting the server:
+Configure these in NitroCloud/project environment variables. The app does not load a local `.env` file.
+
+No GitHub credential is required to start the server.
+
+Required only when using GitHub browser login:
 
 ```bash
-NITROSTACK_API_KEY=your_nitrostack_api_key
 GITHUB_OAUTH_CLIENT_ID=your_github_oauth_app_client_id
 GITHUB_OAUTH_CLIENT_SECRET=your_github_oauth_app_client_secret
 ```
+
+Required for browser redirect login unless `NITROSTACK_PUBLIC_URL` is provided by the platform:
+
+```bash
+RESOURCE_URI=https://your-app.nitrocloud.app
+```
+
+Your GitHub OAuth App callback URL must be:
+
+```text
+https://your-app.nitrocloud.app/auth/github/callback
+```
+
+You can override it explicitly with `GITHUB_OAUTH_REDIRECT_URI`.
 
 Optional fallback (non-interactive):
 
@@ -28,7 +45,25 @@ Optional fallback (non-interactive):
 GITHUB_TOKEN=your_github_personal_access_token
 ```
 
-## Interactive GitHub OAuth Login
+The user access token is created dynamically after `authenticate_github` completes the OAuth device flow. Do not set that dynamic token as an environment variable.
+
+Optional NitroStack OAuth metadata overrides:
+
+```bash
+AUTH_SERVER_URL=https://github.com
+OAUTH_REQUIRED=false
+HOST=0.0.0.0
+```
+
+Set `OAUTH_REQUIRED=true` only after configuring token validation with `JWKS_URI` or the introspection variables.
+
+## Browser GitHub Login
+
+1. Call `authenticate_github` with `{ "action": "browser_start" }`
+2. Open `authorization_url` in the browser and approve GitHub access
+3. Call `authenticate_github` with `{ "action": "browser_poll", "state": "..." }` until status is `authenticated`
+
+## Device-Code GitHub Login
 
 1. Call `authenticate_github` with `{ "action": "start" }`
 2. Open `verification_uri` and enter `user_code`

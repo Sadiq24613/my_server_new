@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { McpApplicationFactory } from '@nitrostack/core';
 import { AppModule } from './app.module.js';
 

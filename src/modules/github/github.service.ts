@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { ConfigService, Injectable, McpError } from '@nitrostack/core';
 import type {
   CommitFileInput,
@@ -37,6 +38,16 @@ interface GitHubDeviceCodePollErrorResponse {
   error_description?: string;
 }
 
+interface GitHubBrowserAuthSession {
+  status: 'pending' | 'authenticated' | 'error';
+  requestedAt: number;
+  expiresAt: number;
+  redirectUri: string;
+  user?: GitHubUser;
+  scopes?: string[];
+  error?: string;
+}
+
 /**
  * Encapsulates all GitHub REST API interactions used by MCP tools.
  */
@@ -49,6 +60,7 @@ export class GitHubService {
     string,
     { requestedAt: number; expiresIn: number; interval: number }
   >();
+  private readonly browserAuthSessions = new Map<string, GitHubBrowserAuthSession>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -189,6 +201,120 @@ export class GitHubService {
       user,
       scopes: response.scope ? response.scope.split(',').map((value) => value.trim()).filter(Boolean) : [],
     };
+  }
+
+  /**
+   * Starts GitHub OAuth authorization-code login through the user's browser.
+   */
+  startBrowserAuthorization(redirectUriOverride?: string): {
+    authorizationUrl: string;
+    callbackUrl: string;
+    state: string;
+    expiresIn: number;
+  } {
+    const clientId = this.getOAuthClientId();
+    if (!this.getOAuthClientSecret()) {
+      throw new McpError(
+        'Browser GitHub login requires GITHUB_OAUTH_CLIENT_SECRET.',
+        'GITHUB_BROWSER_AUTH_CLIENT_SECRET_REQUIRED',
+        400,
+      );
+    }
+    const callbackUrl = redirectUriOverride ?? this.getBrowserRedirectUri();
+    const state = randomBytes(24).toString('hex');
+    const expiresIn = 600;
+
+    const url = new URL(`${this.oauthBaseUrl}/login/oauth/authorize`);
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('redirect_uri', callbackUrl);
+    url.searchParams.set('scope', 'repo read:user');
+    url.searchParams.set('state', state);
+    url.searchParams.set('allow_signup', 'true');
+
+    this.browserAuthSessions.set(state, {
+      status: 'pending',
+      requestedAt: Date.now(),
+      expiresAt: Date.now() + expiresIn * 1000,
+      redirectUri: callbackUrl,
+    });
+
+    return {
+      authorizationUrl: url.toString(),
+      callbackUrl,
+      state,
+      expiresIn,
+    };
+  }
+
+  /**
+   * Handles GitHub's browser OAuth callback and stores the resulting runtime token.
+   */
+  async completeBrowserAuthorization(input: {
+    state: string;
+    code?: string;
+    error?: string;
+    errorDescription?: string;
+  }): Promise<GitHubBrowserAuthSession> {
+    const session = this.browserAuthSessions.get(input.state);
+    if (!session) {
+      throw new McpError('Unknown or expired GitHub OAuth state.', 'GITHUB_BROWSER_AUTH_STATE_NOT_FOUND', 400);
+    }
+
+    if (Date.now() > session.expiresAt) {
+      this.browserAuthSessions.delete(input.state);
+      throw new McpError('GitHub OAuth browser login expired. Start login again.', 'GITHUB_BROWSER_AUTH_EXPIRED', 400);
+    }
+
+    if (input.error) {
+      session.status = 'error';
+      session.error = input.errorDescription ?? input.error;
+      return session;
+    }
+
+    if (!input.code) {
+      throw new McpError('GitHub OAuth callback did not include a code.', 'GITHUB_BROWSER_AUTH_CODE_MISSING', 400);
+    }
+
+    const payload: Record<string, string> = {
+      client_id: this.getOAuthClientId(),
+      code: input.code,
+      redirect_uri: session.redirectUri,
+    };
+    const clientSecret = this.getOAuthClientSecret();
+    if (clientSecret) {
+      payload.client_secret = clientSecret;
+    }
+
+    const response = await this.requestOAuthForm<
+      GitHubDeviceCodePollSuccessResponse | GitHubDeviceCodePollErrorResponse
+    >('/login/oauth/access_token', payload);
+
+    if ('error' in response) {
+      session.status = 'error';
+      session.error = response.error_description ?? response.error;
+      return session;
+    }
+
+    this.runtimeToken = response.access_token;
+    const user = await this.authenticate(response.access_token);
+    session.status = 'authenticated';
+    session.user = user;
+    session.scopes = response.scope ? response.scope.split(',').map((value) => value.trim()).filter(Boolean) : [];
+    return session;
+  }
+
+  pollBrowserAuthorization(state: string): GitHubBrowserAuthSession {
+    const session = this.browserAuthSessions.get(state);
+    if (!session) {
+      throw new McpError('Unknown GitHub OAuth state. Start browser login again.', 'GITHUB_BROWSER_AUTH_STATE_NOT_FOUND', 400);
+    }
+
+    if (Date.now() > session.expiresAt) {
+      this.browserAuthSessions.delete(state);
+      throw new McpError('GitHub OAuth browser login expired. Start login again.', 'GITHUB_BROWSER_AUTH_EXPIRED', 400);
+    }
+
+    return session;
   }
 
   /**
@@ -870,10 +996,18 @@ export class GitHubService {
   }
 
   private getOAuthClientId(): string {
-    return (
+    const clientId =
       this.configService.get<string>('GITHUB_OAUTH_CLIENT_ID') ??
-      this.configService.getOrThrow<string>('GITHUB_CLIENT_ID')
-    );
+      this.configService.get<string>('GITHUB_CLIENT_ID');
+    if (!clientId) {
+      throw new McpError(
+        'GitHub OAuth login requires GITHUB_OAUTH_CLIENT_ID.',
+        'GITHUB_OAUTH_CLIENT_ID_REQUIRED',
+        400,
+      );
+    }
+
+    return clientId;
   }
 
   private getOAuthClientSecret(): string | undefined {
@@ -881,6 +1015,26 @@ export class GitHubService {
       this.configService.get<string>('GITHUB_OAUTH_CLIENT_SECRET') ??
       this.configService.get<string>('GITHUB_CLIENT_SECRET')
     );
+  }
+
+  private getBrowserRedirectUri(): string {
+    const explicitRedirectUri = this.configService.get<string>('GITHUB_OAUTH_REDIRECT_URI');
+    if (explicitRedirectUri) {
+      return explicitRedirectUri;
+    }
+
+    const publicBaseUrl =
+      this.configService.get<string>('RESOURCE_URI') ??
+      this.configService.get<string>('NITROSTACK_PUBLIC_URL');
+    if (!publicBaseUrl) {
+      throw new McpError(
+        'Browser GitHub login requires GITHUB_OAUTH_REDIRECT_URI, RESOURCE_URI, or NITROSTACK_PUBLIC_URL.',
+        'GITHUB_BROWSER_AUTH_REDIRECT_URI_REQUIRED',
+        400,
+      );
+    }
+
+    return `${publicBaseUrl.replace(/\/$/, '')}/auth/github/callback`;
   }
 
   private async requestOAuthForm<T>(

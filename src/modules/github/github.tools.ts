@@ -39,7 +39,7 @@ export class GitHubTools {
   @Tool({
     name: 'authenticate_github',
     description:
-      'Authenticate with GitHub interactively using OAuth device flow. Call with action="start", ask user to open verification_uri and enter user_code, then call action="poll" with device_code until authenticated.',
+      'Authenticate with GitHub. Use browser_start/browser_poll for browser redirect login, start/poll for device flow, or pat for a token fallback.',
     inputSchema: authenticateGithubInputSchema,
     metadata: githubToolMetadata.authenticate_github,
     annotations: {
@@ -79,6 +79,46 @@ export class GitHubTools {
         interval: deviceAuth.interval,
         instructions:
           'Open verification_uri, enter user_code, approve access, then call authenticate_github again with action="poll" and the returned device_code.',
+      });
+    }
+
+    if (input.action === 'browser_start') {
+      const browserAuth = this.githubService.startBrowserAuthorization(input.redirect_uri);
+      return this.ok(context, {
+        status: 'awaiting_browser_authorization',
+        authenticated: false,
+        method: 'oauth_browser',
+        authorization_url: browserAuth.authorizationUrl,
+        callback_url: browserAuth.callbackUrl,
+        state: browserAuth.state,
+        expires_in: browserAuth.expiresIn,
+        instructions:
+          'Open authorization_url in a browser, approve GitHub access, then call authenticate_github with action="browser_poll" and the returned state.',
+      });
+    }
+
+    if (input.action === 'browser_poll') {
+      const state = input.state?.trim();
+      if (!state) {
+        throw new McpError('state is required when action="browser_poll".', 'VALIDATION_ERROR', 400);
+      }
+
+      const browserResult = this.githubService.pollBrowserAuthorization(state);
+      if (browserResult.status === 'authenticated') {
+        return this.ok(context, {
+          status: 'authenticated',
+          authenticated: true,
+          method: 'oauth_browser',
+          user: browserResult.user,
+          scopes: browserResult.scopes ?? [],
+        });
+      }
+
+      return this.ok(context, {
+        status: browserResult.status,
+        authenticated: false,
+        method: 'oauth_browser',
+        message: browserResult.error ?? 'Authorization pending. Finish login in the browser.',
       });
     }
 

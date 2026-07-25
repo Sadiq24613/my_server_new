@@ -49,13 +49,22 @@ export type CommitFileInput = z.infer<typeof commitFileSchema>;
  */
 export const authenticateGithubInputSchema = z.object({
   action: z
-    .enum(['start', 'poll', 'pat'])
+    .enum(['start', 'poll', 'browser_start', 'browser_poll', 'pat'])
     .default('start')
-    .describe('OAuth device-flow action. Use start first, then poll with device_code.'),
+    .describe('Authentication action. Use browser_start/browser_poll for redirect login, or start/poll for device login.'),
   device_code: z
     .string()
     .optional()
     .describe('Device code returned by authenticate_github(action="start").'),
+  state: z
+    .string()
+    .optional()
+    .describe('Browser OAuth state returned by authenticate_github(action="browser_start").'),
+  redirect_uri: z
+    .string()
+    .url()
+    .optional()
+    .describe('Optional GitHub OAuth callback URL override for browser_start.'),
   token: z
     .string()
     .min(20)
