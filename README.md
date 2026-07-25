@@ -10,6 +10,11 @@ Production-oriented NitroStack MCP server for GitHub repository automation.
 - Commit history listing plus commit creation (single and multiple files) and branch ref updates
 - Pull request creation, listing, and merging
 - Repository analyzer service for framework/language/package-manager detection
+- Agent-first workflow tools:
+  - `repo_onboarding_summary` for tech-stack detection, important files, and safe next steps
+  - `apply_code_patch` for "push/save/commit this code" requests
+  - `create_feature_branch_and_pr` for branch + commit + PR workflows
+  - `prepare_deploy_plan` for deploy readiness, build/start commands, and Dockerfile generation
 - Deployment provider abstraction (`VercelProvider`, `RenderProvider`) prepared for Phase 2
 
 ## Environment Variables

@@ -212,6 +212,45 @@ export const mergePullRequestInputSchema = z.object({
   merge_method: z.enum(['merge', 'squash', 'rebase']).default('merge'),
 });
 
+export const repoOnboardingSummaryInputSchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  ref: z.string().default('HEAD'),
+});
+
+export const applyCodePatchInputSchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  branch: z.string().min(1).describe('Target branch to update, e.g. main or a feature branch'),
+  message: z.string().min(1).describe('Commit message for the code patch'),
+  files: z.array(commitFileSchema).min(1).describe('All files to create or update in one commit'),
+});
+
+export const createFeatureBranchAndPrInputSchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  base_branch: z.string().default('main').describe('Branch to create the feature branch from'),
+  feature_branch: z
+    .string()
+    .optional()
+    .describe('Optional feature branch name. If omitted, one is generated from the PR title.'),
+  title: z.string().min(1).describe('Pull request title'),
+  body: z.string().optional().describe('Pull request body'),
+  commit_message: z.string().min(1).describe('Commit message for all file changes'),
+  files: z.array(commitFileSchema).min(1).describe('All files to create or update in the feature branch'),
+  draft: z.boolean().default(false),
+});
+
+export const prepareDeployPlanInputSchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  ref: z.string().default('HEAD'),
+  include_docker_files: z
+    .boolean()
+    .default(true)
+    .describe('When true, return Dockerfile and .dockerignore content that can be committed.'),
+});
+
 /**
  * Repository analyzer output schema.
  */
@@ -303,6 +342,22 @@ export const githubToolMetadata = {
   merge_pull_request: {
     category: 'github-pull-requests',
     tags: ['github', 'pull-request', 'merge'],
+  },
+  repo_onboarding_summary: {
+    category: 'github-workflows',
+    tags: ['github', 'repository', 'onboarding', 'tech-stack', 'agent-first'],
+  },
+  apply_code_patch: {
+    category: 'github-workflows',
+    tags: ['github', 'code', 'commit', 'push', 'agent-first'],
+  },
+  create_feature_branch_and_pr: {
+    category: 'github-workflows',
+    tags: ['github', 'code', 'branch', 'commit', 'pull-request', 'agent-first'],
+  },
+  prepare_deploy_plan: {
+    category: 'github-workflows',
+    tags: ['github', 'deploy', 'docker', 'tech-stack', 'agent-first'],
   },
 };
 

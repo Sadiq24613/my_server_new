@@ -793,6 +793,145 @@ export class GitHubService {
     return this.repositoryAnalyzer.analyze(paths, fileContents);
   }
 
+  async getRepoOnboardingSummary(
+    owner: string,
+    repo: string,
+    ref = 'HEAD',
+    token?: string,
+  ): Promise<{
+    repository: GitHubRepositorySummary;
+    ref: string;
+    defaultBranch: string;
+    analysis: RepositoryAnalysis;
+    importantFiles: string[];
+    recommendedAgentWorkflow: string[];
+    deployHints: ReturnType<GitHubService['buildDeployHints']>;
+  }> {
+    const repository = await this.getRepository(owner, repo, token);
+    const tree = await this.readRepositoryTree(owner, repo, ref, true, undefined, token);
+    const paths = tree.tree.map((item) => item.path);
+    const analysis = await this.analyzeRepository(owner, repo, tree.ref, token);
+    const deployHints = this.buildDeployHints(analysis, paths);
+
+    return {
+      repository,
+      ref: tree.ref,
+      defaultBranch: repository.default_branch,
+      analysis,
+      importantFiles: this.selectImportantFiles(paths),
+      recommendedAgentWorkflow: [
+        'Use repo_onboarding_summary before editing unfamiliar repositories.',
+        'Use apply_code_patch when the user asks to save, commit, push, or update files on an existing branch.',
+        'Use create_feature_branch_and_pr when the user asks to ship a change, open a PR, review changes, or avoid writing directly to main.',
+        'Use prepare_deploy_plan when the user asks to deploy, dockerize, containerize, or identify build/start commands.',
+      ],
+      deployHints,
+    };
+  }
+
+  async applyCodePatch(
+    owner: string,
+    repo: string,
+    branch: string,
+    message: string,
+    files: CommitFileInput[],
+    token?: string,
+  ): Promise<{
+    branch: string;
+    commit: { previousCommitSha: string; commitSha: string; treeSha: string };
+    filesChanged: string[];
+  }> {
+    const commit = await this.commitMultipleFiles(owner, repo, branch, message, files, token);
+    return {
+      branch,
+      commit: {
+        previousCommitSha: commit.previousCommitSha,
+        commitSha: commit.commitSha,
+        treeSha: commit.treeSha,
+      },
+      filesChanged: files.map((file) => file.path),
+    };
+  }
+
+  async createFeatureBranchAndPr(
+    owner: string,
+    repo: string,
+    input: {
+      base_branch: string;
+      feature_branch?: string;
+      title: string;
+      body?: string;
+      commit_message: string;
+      files: CommitFileInput[];
+      draft: boolean;
+    },
+    token?: string,
+  ): Promise<{
+    branch: { ref: string; sha: string; name: string };
+    commit: { previousCommitSha: string; commitSha: string; treeSha: string };
+    pullRequest: GitHubPullRequestSummary;
+    filesChanged: string[];
+  }> {
+    const branchName = input.feature_branch ?? this.generateBranchName(input.title);
+    const branch = await this.createBranch(owner, repo, branchName, `heads/${input.base_branch}`, token);
+    const commit = await this.commitMultipleFiles(owner, repo, branchName, input.commit_message, input.files, token);
+    const pullRequest = await this.createPullRequest(
+      owner,
+      repo,
+      {
+        title: input.title,
+        head: branchName,
+        base: input.base_branch,
+        body: input.body,
+        draft: input.draft,
+      },
+      token,
+    );
+
+    return {
+      branch: {
+        ref: branch.ref,
+        sha: branch.sha,
+        name: branchName,
+      },
+      commit,
+      pullRequest,
+      filesChanged: input.files.map((file) => file.path),
+    };
+  }
+
+  async prepareDeployPlan(
+    owner: string,
+    repo: string,
+    ref = 'HEAD',
+    includeDockerFiles = true,
+    token?: string,
+  ): Promise<{
+    repository: GitHubRepositorySummary;
+    ref: string;
+    analysis: RepositoryAnalysis;
+    build: ReturnType<GitHubService['buildDeployHints']>;
+    docker?: {
+      recommended: boolean;
+      reason: string;
+      files: CommitFileInput[];
+    };
+  }> {
+    const repository = await this.getRepository(owner, repo, token);
+    const tree = await this.readRepositoryTree(owner, repo, ref, true, undefined, token);
+    const paths = tree.tree.map((item) => item.path);
+    const analysis = await this.analyzeRepository(owner, repo, tree.ref, token);
+    const build = this.buildDeployHints(analysis, paths);
+
+    return {
+      repository,
+      ref: tree.ref,
+      analysis,
+      build,
+      docker: includeDockerFiles ? this.buildDockerFiles(analysis, paths) : undefined,
+    };
+  }
+
   private async commitFiles(
     owner: string,
     repo: string,
@@ -1035,6 +1174,246 @@ export class GitHubService {
     }
 
     return `${publicBaseUrl.replace(/\/$/, '')}/auth/github/callback`;
+  }
+
+  private selectImportantFiles(paths: string[]): string[] {
+    const priority = [
+      'package.json',
+      'pnpm-lock.yaml',
+      'package-lock.json',
+      'yarn.lock',
+      'bun.lockb',
+      'requirements.txt',
+      'pyproject.toml',
+      'go.mod',
+      'Cargo.toml',
+      'Dockerfile',
+      'docker-compose.yml',
+      '.github/workflows',
+      'README.md',
+    ];
+
+    return paths
+      .filter((path) => priority.some((candidate) => path === candidate || path.startsWith(`${candidate}/`)))
+      .slice(0, 40);
+  }
+
+  private buildDeployHints(
+    analysis: RepositoryAnalysis,
+    paths: string[],
+  ): {
+    likelyRuntime: string;
+    packageManager: RepositoryAnalysis['packageManager'];
+    installCommand?: string;
+    buildCommand?: string;
+    startCommand?: string;
+    dockerfilePath: string;
+    notes: string[];
+  } {
+    const hasPath = (path: string): boolean => paths.includes(path);
+    const notes: string[] = [];
+
+    if (analysis.frameworks.includes('Next.js')) {
+      const packageManager = analysis.packageManager === 'unknown' ? 'npm' : analysis.packageManager;
+      return {
+        likelyRuntime: 'node',
+        packageManager,
+        installCommand: this.packageInstallCommand(packageManager, this.hasPackageLockfile(packageManager, paths)),
+        buildCommand: `${this.packageRunner(packageManager)} run build`,
+        startCommand: `${this.packageRunner(packageManager)} run start`,
+        dockerfilePath: 'Dockerfile',
+        notes: [
+          'Detected Next.js. Ensure package.json has build and start scripts.',
+          ...notes,
+        ],
+      };
+    }
+
+    if (analysis.languages.includes('Node')) {
+      const packageManager = analysis.packageManager === 'unknown' ? 'npm' : analysis.packageManager;
+      return {
+        likelyRuntime: 'node',
+        packageManager,
+        installCommand: this.packageInstallCommand(packageManager, this.hasPackageLockfile(packageManager, paths)),
+        buildCommand: hasPath('tsconfig.json') ? `${this.packageRunner(packageManager)} run build` : undefined,
+        startCommand: `${this.packageRunner(packageManager)} start`,
+        dockerfilePath: 'Dockerfile',
+        notes: [
+          'Detected Node.js. Confirm package.json scripts before deploying.',
+          ...notes,
+        ],
+      };
+    }
+
+    if (analysis.frameworks.includes('FastAPI')) {
+      return {
+        likelyRuntime: 'python',
+        packageManager: analysis.packageManager,
+        installCommand: hasPath('requirements.txt') ? 'pip install -r requirements.txt' : 'pip install .',
+        startCommand: 'uvicorn main:app --host 0.0.0.0 --port 8000',
+        dockerfilePath: 'Dockerfile',
+        notes: ['Detected FastAPI. Adjust module path if the app is not main:app.'],
+      };
+    }
+
+    if (analysis.languages.includes('Python')) {
+      return {
+        likelyRuntime: 'python',
+        packageManager: analysis.packageManager,
+        installCommand: hasPath('requirements.txt') ? 'pip install -r requirements.txt' : 'pip install .',
+        startCommand: 'python main.py',
+        dockerfilePath: 'Dockerfile',
+        notes: ['Detected Python. Confirm entry point before deploying.'],
+      };
+    }
+
+    return {
+      likelyRuntime: 'unknown',
+      packageManager: analysis.packageManager,
+      dockerfilePath: 'Dockerfile',
+      notes: ['Unable to infer a complete deploy command set. Ask for entry point or inspect README/package files.'],
+    };
+  }
+
+  private buildDockerFiles(
+    analysis: RepositoryAnalysis,
+    paths: string[],
+  ): {
+    recommended: boolean;
+    reason: string;
+    files: CommitFileInput[];
+  } {
+    if (analysis.hasDockerfile) {
+      return {
+        recommended: false,
+        reason: 'Repository already contains a Dockerfile.',
+        files: [],
+      };
+    }
+
+    const hints = this.buildDeployHints(analysis, paths);
+    if (hints.likelyRuntime === 'node') {
+      const packageManager = hints.packageManager === 'unknown' ? 'npm' : hints.packageManager;
+      const lockfile = this.lockfileForPackageManager(packageManager);
+      const hasLockfile = lockfile ? paths.includes(lockfile) : false;
+      const installCommand = this.packageInstallCommand(packageManager, hasLockfile);
+      const buildCommand = hints.buildCommand;
+      const startCommand = hints.startCommand ?? `${this.packageRunner(packageManager)} start`;
+      const copyLockfile = hasLockfile && lockfile ? `COPY package.json ${lockfile} ./` : 'COPY package.json ./';
+
+      return {
+        recommended: true,
+        reason: 'Generated a production Node.js Dockerfile from detected package metadata.',
+        files: [
+          {
+            path: 'Dockerfile',
+            encoding: 'utf-8',
+            mode: '100644',
+            content: [
+              'FROM node:22-alpine AS deps',
+              'WORKDIR /app',
+              copyLockfile,
+              `RUN ${installCommand}`,
+              '',
+              'FROM node:22-alpine AS builder',
+              'WORKDIR /app',
+              'COPY --from=deps /app/node_modules ./node_modules',
+              'COPY . .',
+              buildCommand ? `RUN ${buildCommand}` : '# No build command inferred',
+              '',
+              'FROM node:22-alpine AS runner',
+              'WORKDIR /app',
+              'ENV NODE_ENV=production',
+              'COPY --from=builder /app .',
+              'EXPOSE 3000',
+              `CMD ${JSON.stringify(startCommand.split(' '))}`,
+              '',
+            ].join('\n'),
+          },
+          {
+            path: '.dockerignore',
+            encoding: 'utf-8',
+            mode: '100644',
+            content: ['node_modules', 'dist', '.next/cache', '.git', '.env', 'npm-debug.log*', ''].join('\n'),
+          },
+        ],
+      };
+    }
+
+    if (hints.likelyRuntime === 'python') {
+      const installCommand = hints.installCommand ?? 'pip install .';
+      const startCommand = hints.startCommand ?? 'python main.py';
+      return {
+        recommended: true,
+        reason: 'Generated a Python Dockerfile from detected Python project files.',
+        files: [
+          {
+            path: 'Dockerfile',
+            encoding: 'utf-8',
+            mode: '100644',
+            content: [
+              'FROM python:3.12-slim',
+              'WORKDIR /app',
+              'ENV PYTHONDONTWRITEBYTECODE=1',
+              'ENV PYTHONUNBUFFERED=1',
+              'COPY . .',
+              `RUN ${installCommand}`,
+              'EXPOSE 8000',
+              `CMD ${JSON.stringify(startCommand.split(' '))}`,
+              '',
+            ].join('\n'),
+          },
+          {
+            path: '.dockerignore',
+            encoding: 'utf-8',
+            mode: '100644',
+            content: ['__pycache__', '*.pyc', '.venv', '.git', '.env', ''].join('\n'),
+          },
+        ],
+      };
+    }
+
+    return {
+      recommended: false,
+      reason: 'Dockerfile generation needs a recognized Node.js or Python stack.',
+      files: [],
+    };
+  }
+
+  private packageRunner(packageManager: RepositoryAnalysis['packageManager']): string {
+    if (packageManager === 'pnpm') return 'pnpm';
+    if (packageManager === 'yarn') return 'yarn';
+    if (packageManager === 'bun') return 'bun';
+    return 'npm';
+  }
+
+  private packageInstallCommand(packageManager: RepositoryAnalysis['packageManager'], hasLockfile = true): string {
+    if (packageManager === 'pnpm') return hasLockfile ? 'pnpm install --frozen-lockfile' : 'pnpm install';
+    if (packageManager === 'yarn') return hasLockfile ? 'yarn install --frozen-lockfile' : 'yarn install';
+    if (packageManager === 'bun') return hasLockfile ? 'bun install --frozen-lockfile' : 'bun install';
+    return hasLockfile ? 'npm ci' : 'npm install';
+  }
+
+  private lockfileForPackageManager(packageManager: RepositoryAnalysis['packageManager']): string | undefined {
+    if (packageManager === 'pnpm') return 'pnpm-lock.yaml';
+    if (packageManager === 'yarn') return 'yarn.lock';
+    if (packageManager === 'bun') return 'bun.lockb';
+    if (packageManager === 'npm') return 'package-lock.json';
+    return undefined;
+  }
+
+  private hasPackageLockfile(packageManager: RepositoryAnalysis['packageManager'], paths: string[]): boolean {
+    const lockfile = this.lockfileForPackageManager(packageManager);
+    return lockfile ? paths.includes(lockfile) : false;
+  }
+
+  private generateBranchName(title: string): string {
+    const slug = title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'agent-change';
+    return `agent/${slug}-${Date.now().toString(36)}`;
   }
 
   private async requestOAuthForm<T>(

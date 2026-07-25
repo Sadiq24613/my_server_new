@@ -1,6 +1,6 @@
 import {
-  ControllerDecorator as Controller,
   ExecutionContext,
+  Injectable,
   McpError,
   ToolDecorator as Tool,
   UseFilters,
@@ -10,9 +10,11 @@ import { GitHubExceptionFilter } from '../../filters/github-exception.filter.js'
 import { GitHubService } from './github.service.js';
 import {
   authenticateGithubInputSchema,
+  applyCodePatchInputSchema,
   commitMultipleFilesInputSchema,
   createBranchInputSchema,
   createCommitInputSchema,
+  createFeatureBranchAndPrInputSchema,
   createPullRequestInputSchema,
   createRepositoryInputSchema,
   deleteBranchInputSchema,
@@ -22,17 +24,19 @@ import {
   listPullRequestsInputSchema,
   listRepositoriesInputSchema,
   mergePullRequestInputSchema,
+  prepareDeployPlanInputSchema,
   pushChangesInputSchema,
   readDirectoryInputSchema,
   readFileInputSchema,
   readRepositoryTreeInputSchema,
+  repoOnboardingSummaryInputSchema,
   searchRepositoryInputSchema,
 } from './github.types.js';
 
 /**
  * MCP tool controller exposing GitHub repository and PR automation operations.
  */
-@Controller()
+@Injectable({ deps: [GitHubService] })
 export class GitHubTools {
   constructor(private readonly githubService: GitHubService) {}
 
@@ -215,6 +219,109 @@ export class GitHubTools {
       repository,
       analysis,
     });
+  }
+
+  @Tool({
+    name: 'repo_onboarding_summary',
+    description:
+      'Use this first when an agent needs to understand a GitHub repository, detect its tech stack, choose build/start commands, or decide how to safely edit it. Returns framework/language/package-manager detection, important files, deploy hints, and recommended next MCP workflow tools.',
+    inputSchema: repoOnboardingSummaryInputSchema,
+    metadata: githubToolMetadata.repo_onboarding_summary,
+    annotations: {
+      destructiveHint: false,
+      idempotentHint: true,
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
+  })
+  @UseFilters(GitHubExceptionFilter)
+  async repoOnboardingSummary(
+    input: z.infer<typeof repoOnboardingSummaryInputSchema>,
+    context: ExecutionContext,
+  ) {
+    const summary = await this.githubService.getRepoOnboardingSummary(input.owner, input.repo, input.ref);
+    return this.ok(context, summary);
+  }
+
+  @Tool({
+    name: 'apply_code_patch',
+    description:
+      'Preferred tool when the user asks to push code, save generated files, edit files in GitHub, commit changes, update a branch, or apply a patch. Commits many files atomically to the target branch in one GitHub commit.',
+    inputSchema: applyCodePatchInputSchema,
+    metadata: githubToolMetadata.apply_code_patch,
+    annotations: {
+      destructiveHint: true,
+      idempotentHint: false,
+      readOnlyHint: false,
+      openWorldHint: true,
+    },
+  })
+  @UseFilters(GitHubExceptionFilter)
+  async applyCodePatch(
+    input: z.infer<typeof applyCodePatchInputSchema>,
+    context: ExecutionContext,
+  ) {
+    const result = await this.githubService.applyCodePatch(
+      input.owner,
+      input.repo,
+      input.branch,
+      input.message,
+      input.files,
+    );
+    return this.ok(context, result);
+  }
+
+  @Tool({
+    name: 'create_feature_branch_and_pr',
+    description:
+      'Preferred tool when the user asks to ship a change, push code safely, open a PR, make a feature branch, implement a requested edit for review, or avoid committing directly to main. Creates a branch, commits all files, and opens a pull request in one workflow.',
+    inputSchema: createFeatureBranchAndPrInputSchema,
+    metadata: githubToolMetadata.create_feature_branch_and_pr,
+    annotations: {
+      destructiveHint: true,
+      idempotentHint: false,
+      readOnlyHint: false,
+      openWorldHint: true,
+    },
+  })
+  @UseFilters(GitHubExceptionFilter)
+  async createFeatureBranchAndPr(
+    input: z.infer<typeof createFeatureBranchAndPrInputSchema>,
+    context: ExecutionContext,
+  ) {
+    const result = await this.githubService.createFeatureBranchAndPr(
+      input.owner,
+      input.repo,
+      input,
+    );
+    return this.ok(context, result);
+  }
+
+  @Tool({
+    name: 'prepare_deploy_plan',
+    description:
+      'Preferred tool when the user asks to deploy, dockerize, containerize, prepare a repo for cloud hosting, detect tech stack, infer build/start commands, or generate Dockerfile files. Returns deploy plan and optional Dockerfile/.dockerignore content that can be committed with apply_code_patch or create_feature_branch_and_pr.',
+    inputSchema: prepareDeployPlanInputSchema,
+    metadata: githubToolMetadata.prepare_deploy_plan,
+    annotations: {
+      destructiveHint: false,
+      idempotentHint: true,
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
+  })
+  @UseFilters(GitHubExceptionFilter)
+  async prepareDeployPlan(
+    input: z.infer<typeof prepareDeployPlanInputSchema>,
+    context: ExecutionContext,
+  ) {
+    const result = await this.githubService.prepareDeployPlan(
+      input.owner,
+      input.repo,
+      input.ref,
+      input.include_docker_files,
+    );
+    return this.ok(context, result);
   }
 
   @Tool({
